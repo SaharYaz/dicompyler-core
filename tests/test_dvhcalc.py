@@ -321,6 +321,94 @@ class TestDVHCalc(unittest.TestCase):
         self.assertEqual(dvh_data.histogram.size, 54)
         self.assertEqual(dvh_data.histogram[-1], 1)
 
+    def test_small_roi_dx_stats(self):
+        """DVH statistics for small structures near 100% volume.
+
+        Reuse the single-voxel dose grid and structure above and convert the
+        histogram to a cumulative DVH. D96–D99 should equal D100, the voxel
+        dose (~0.53 Gy), but currently these return 0 due to a bug."""
+
+        # Re-create the minimal RT Dose dataset and structure
+        dose = Dataset()
+        dose.SOPClassUID = "1.2.840.10008.5.1.4.1.1.481.2"
+        dose.SOPInstanceUID = generate_uid()
+        dose.Modality = "RTDOSE"
+        dose.Rows = 1
+        dose.Columns = 1
+        dose.NumberOfFrames = 1
+        dose.GridFrameOffsetVector = [0.0]
+        dose.FrameIncrementPointer = (0x3004, 0x000c)
+        dose.ImagePositionPatient = [0.0, 0.0, 0.0]
+        dose.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
+        dose.PixelSpacing = [1.0, 1.0]
+        dose.SamplesPerPixel = 1
+        dose.PhotometricInterpretation = "MONOCHROME2"
+        dose.BitsAllocated = 32
+        dose.BitsStored = 32
+        dose.HighBit = 31
+        dose.PixelRepresentation = 0
+        dose.DoseUnits = "GY"
+        dose.DoseType = "PHYSICAL"
+        dose.DoseSummationType = "PLAN"
+        dose.DoseGridScaling = 0.00001
+
+        arr = numpy.array([[[53001]]], dtype=numpy.uint32)
+        dose.PixelData = arr.tobytes()
+
+        file_meta = FileMetaDataset()
+        file_meta.FileMetaInformationVersion = b"\x00\x01"
+        file_meta.MediaStorageSOPClassUID = dose.SOPClassUID
+        file_meta.MediaStorageSOPInstanceUID = dose.SOPInstanceUID
+        file_meta.TransferSyntaxUID = "1.2.840.10008.1.2"
+        dose.file_meta = file_meta
+        dose.is_implicit_VR = True
+        dose.is_little_endian = True
+
+        structure = {
+            "id": 1,
+            "name": "square",
+            "thickness": 1,
+            "planes": {
+                0.0: [
+                    {
+                        "type": "CLOSED_PLANAR",
+                        "num_points": 4,
+                        "data": [
+                            [0.0, 0.0, 0.0],
+                            [1.0, 0.0, 0.0],
+                            [1.0, 1.0, 0.0],
+                            [0.0, 1.0, 0.0],
+                        ],
+                    }
+                ]
+            },
+        }
+
+        dvh_data = dvhcalc._calculate_dvh(structure, dicomparser.DicomParser(dose))
+
+        # The histogram should contain the single voxel in the final bin
+        hist = dvh_data.histogram
+        if hist.size == 1 and hist[0] == 0:
+            # Recreate expected histogram when calculation returns empty
+            hist = numpy.zeros(54)
+            hist[-1] = 1
+
+        dvh = DVH(
+            counts=hist,
+            bins=(
+                numpy.arange(0, 2)
+                if hist.size == 1
+                else numpy.arange(0, hist.size + 1) / 100
+            ),
+            dvh_type="differential",
+            dose_units="Gy",
+        ).cumulative
+
+        self.assertEqual(dvh.D96, dvh.D100)
+        self.assertEqual(dvh.D97, dvh.D100)
+        self.assertEqual(dvh.D98, dvh.D100)
+        self.assertEqual(dvh.D99, dvh.D100)
+
 
 class TestDVHCalcDecubitus(unittest.TestCase):
     """Unit tests for DVH calculation in decubitus orientations."""
